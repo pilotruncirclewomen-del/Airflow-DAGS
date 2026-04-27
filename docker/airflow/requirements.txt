@@ -1,0 +1,10 @@
+apache-airflow-providers-postgres
+apache-airflow-providers-fab
+google-cloud-bigquery
+google-auth
+google-cloud-storage
+httpx
+psycopg[binary]
+pyarrow
+requests
+tenacity

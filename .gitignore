@@ -1,0 +1,21 @@
+# Secrets
+.env.airflow
+.env
+credentials/bigquery-sa.json
+credentials/*.json
+!credentials/.gitkeep
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.venv/
+venv/
+
+# macOS
+.DS_Store
+
+# Airflow
+airflow/logs/
+airflow/plugins/

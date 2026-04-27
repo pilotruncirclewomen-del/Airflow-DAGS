@@ -1,0 +1,42 @@
+name: turn-airflow
+
+services:
+  airflow:
+    build:
+      context: .
+      dockerfile: docker/airflow/Dockerfile
+    restart: unless-stopped
+    entrypoint: /bin/bash
+    env_file:
+      - .airflow.env
+    environment:
+      AIRFLOW_HOME: /opt/airflow
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
+      AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_USERS: ${AIRFLOW_SIMPLE_AUTH_MANAGER_USERS:-admin:admin}
+      PYTHONPATH: /opt/airflow/include:/opt/pipeline/Digital_Ocean_backend
+      TURN_PLATFORM_SQL_DIR: /opt/pipeline/sql
+      _AIRFLOW_WWW_USER_USERNAME: ${AIRFLOW_ADMIN_USERNAME}
+      _AIRFLOW_WWW_USER_PASSWORD: ${AIRFLOW_ADMIN_PASSWORD}
+      _AIRFLOW_WWW_USER_EMAIL: ${AIRFLOW_ADMIN_EMAIL}
+      _AIRFLOW_WWW_USER_FIRSTNAME: ${AIRFLOW_ADMIN_FIRSTNAME:-Turn}
+      _AIRFLOW_WWW_USER_LASTNAME: ${AIRFLOW_ADMIN_LASTNAME:-Admin}
+    command:
+      - -lc
+      - |
+        airflow db migrate
+        exec airflow standalone
+    ports:
+      - "127.0.0.1:8088:8080"
+    volumes:
+      - airflow_home:/opt/airflow
+      - ./airflow/dags:/opt/airflow/dags:ro
+      - ./airflow/include:/opt/airflow/include:ro
+      - ./sql:/opt/pipeline/sql:ro
+      - ./Digital_Ocean_backend:/opt/pipeline/Digital_Ocean_backend:ro
+    user: "${AIRFLOW_UID:-50000}:0"
+    cpus: 1.0
+    mem_limit: 2g
+
+volumes:
+  airflow_home:
