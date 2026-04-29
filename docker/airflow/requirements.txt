@@ -4,6 +4,7 @@ google-cloud-bigquery
 google-auth
 google-cloud-storage
 httpx
+memory-profiler
 psycopg[binary]
 pyarrow
 requests

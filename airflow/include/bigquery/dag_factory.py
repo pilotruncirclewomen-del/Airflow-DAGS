@@ -83,24 +83,35 @@ def make_sync_dag(tc: dict):
     Returns a fully wired Airflow DAG for a single BigQuery table.
     tc must come from table_configs.TABLE_CONFIGS (already enriched).
     """
-    bq_table    = tc["bq_table"]
-    table_key   = tc["table_key"]
-    size_tier   = tc.get("size_tier", "medium")
-    history_start = tc.get("history_start", "2022-01-01")
+    bq_table       = tc["bq_table"]
+    pg_table       = tc.get("pg_table", bq_table)
+    table_key      = tc["table_key"]
+    size_tier      = tc.get("size_tier", "medium")
+    history_start  = tc.get("history_start", "2022-01-01")
+    schedule       = tc.get("schedule", "0 2 * * *")
+    memory_profile = bool(tc.get("memory_profile", False))
 
     chunk_size, chunk_months, n_retries, retry_min = _TIER[size_tier]
     chunk_size = tc.get("chunk_size_override", chunk_size)
 
-    dag_id = f"bq_sync__{bq_table}"
+    # dag_id keys off pg_table so staging variants (same BQ source, different
+    # destination) get a distinct DAG.
+    dag_id = f"bq_sync__{pg_table}"
+
+    extra_tags = []
+    if pg_table != bq_table:
+        extra_tags.append("staging")
+    if memory_profile:
+        extra_tags.append("memory_profiled")
 
     @dag_decorator(
         dag_id=dag_id,
-        description=f"Daily BQ → warehouse sync for {bq_table} ({size_tier})",
-        schedule="0 2 * * *",
+        description=f"BQ → warehouse sync for {bq_table} → {pg_table} ({size_tier}, schedule={schedule})",
+        schedule=schedule,
         start_date=datetime(2025, 1, 1, tzinfo=timezone.utc),
         catchup=False,
         max_active_runs=1,
-        tags=["bigquery", "warehouse", size_tier],
+        tags=["bigquery", "warehouse", size_tier, *extra_tags],
         default_args={
             "retries":     n_retries,
             "retry_delay": timedelta(minutes=retry_min),
@@ -217,6 +228,11 @@ def make_sync_dag(tc: dict):
             """
             Transfer one date-range chunk from BigQuery into the warehouse.
             Fully idempotent — safe to retry or re-run.
+
+            If the table config has memory_profile=True, the transfer is run
+            under memory_profiler.memory_usage with a 1.0s sampling interval.
+            Baseline / peak / delta RSS are recorded on the returned stats and
+            logged for observability.
             """
             from bigquery.client import BigQueryClient
             from bigquery.transfer import transfer_table as _transfer
@@ -234,15 +250,40 @@ def make_sync_dag(tc: dict):
                 credentials_json=BQ_CREDENTIALS_JSON or None,
             )
 
-            stats = _transfer(
-                bq_client       = bq,
-                warehouse_dsn   = WAREHOUSE_DSN,
-                table_config    = table_cfg,
-                run_type        = run_type,
-                where_clause    = chunk.get("where_clause"),
-                watermark_start = chunk.get("watermark_start"),
-                chunk_size      = chunk_size,
-            )
+            def _do_transfer():
+                return _transfer(
+                    bq_client       = bq,
+                    warehouse_dsn   = WAREHOUSE_DSN,
+                    table_config    = table_cfg,
+                    run_type        = run_type,
+                    where_clause    = chunk.get("where_clause"),
+                    watermark_start = chunk.get("watermark_start"),
+                    chunk_size      = chunk_size,
+                )
+
+            if memory_profile:
+                from memory_profiler import memory_usage
+                samples, stats = memory_usage(
+                    (_do_transfer, (), {}),
+                    interval=1.0,
+                    timeout=None,
+                    retval=True,
+                    include_children=True,
+                    multiprocess=False,
+                )
+                baseline_mb = samples[0] if samples else 0.0
+                peak_mb     = max(samples) if samples else 0.0
+                stats["mem_baseline_mb"] = round(baseline_mb, 1)
+                stats["mem_peak_mb"]     = round(peak_mb, 1)
+                stats["mem_delta_mb"]    = round(peak_mb - baseline_mb, 1)
+                stats["mem_samples"]     = len(samples)
+                log.info(
+                    "[%s] chunk %s memory: baseline=%.1f MB peak=%.1f MB delta=%.1f MB (%d samples)",
+                    bq_table, label, baseline_mb, peak_mb, peak_mb - baseline_mb, len(samples),
+                )
+            else:
+                stats = _do_transfer()
+
             stats["chunk_label"] = label
             return stats
 
@@ -269,14 +310,14 @@ def make_sync_dag(tc: dict):
 
             with psycopg.connect(WAREHOUSE_DSN, row_factory=dict_row) as conn:
                 pg_row = conn.execute(
-                    f'SELECT COUNT(*) AS cnt FROM "{tc["pg_schema"]}"."{bq_table}"'
+                    f'SELECT COUNT(*) AS cnt FROM "{tc["pg_schema"]}"."{pg_table}"'
                 ).fetchone()
                 pg_count = pg_row["cnt"]
 
                 match_symbol = "✓" if bq_count == pg_count else "⚠"
                 log.info(
-                    "%s [%s]  BQ=%d  PG=%d  diff=%d",
-                    match_symbol, bq_table, bq_count, pg_count, bq_count - pg_count,
+                    "%s [%s → %s]  BQ=%d  PG=%d  diff=%d",
+                    match_symbol, bq_table, pg_table, bq_count, pg_count, bq_count - pg_count,
                 )
 
                 # Mark historical complete if:

@@ -133,6 +133,40 @@ TABLE_CONFIGS: list[dict] = [
         "size_tier":          "light",
         "history_start":      "2022-01-01",
     },
+    # ── Staging variants (15-minute incremental, memory-profiled) ─────────────
+    # Same BQ source, separate PG destination with `_staging` suffix. Run on
+    # a tighter schedule than the daily DAGs so we can validate freshness and
+    # memory characteristics in parallel before cutting over.
+    {
+        "bq_table":           "accounts",
+        "pg_table":           "accounts_staging",
+        "conflict_columns":   ["uuid"],
+        "incremental_column": "updated_at",
+        "size_tier":          "light",
+        "history_start":      "2022-01-01",
+        "schedule":           "*/15 * * * *",
+        "memory_profile":     True,
+    },
+    {
+        "bq_table":           "ai_events",
+        "pg_table":           "ai_events_staging",
+        "conflict_columns":   ["uuid"],
+        "incremental_column": "updated_at",
+        "size_tier":          "medium",
+        "history_start":      "2022-01-01",
+        "schedule":           "*/15 * * * *",
+        "memory_profile":     True,
+    },
+    {
+        "bq_table":           "attachments",
+        "pg_table":           "attachments_staging",
+        "conflict_columns":   ["id"],
+        "incremental_column": "updated_at",
+        "size_tier":          "medium",
+        "history_start":      "2022-01-01",
+        "schedule":           "*/15 * * * *",
+        "memory_profile":     True,
+    },
 ]
 
 # Enrich with shared fields
@@ -142,7 +176,9 @@ for _tc in TABLE_CONFIGS:
     _tc.setdefault("pg_schema",    PG_SCHEMA)
     _tc.setdefault("pg_table",     _tc["bq_table"])
     _tc.setdefault("update_columns", None)
-    _tc["table_key"] = f"{_tc['bq_dataset']}.{_tc['bq_table']}"
+    # table_key keys off pg_table so multiple destinations for the same BQ
+    # source (e.g. staging variants) get distinct sync_state rows.
+    _tc["table_key"] = f"{_tc['bq_dataset']}.{_tc['pg_table']}"
 
 # Quick lookup by table name
 TABLE_CONFIG_MAP: dict[str, dict] = {tc["bq_table"]: tc for tc in TABLE_CONFIGS}

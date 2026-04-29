@@ -19,3 +19,6 @@ venv/
 # Airflow
 airflow/logs/
 airflow/plugins/
+
+# Local-only notes (do not commit)
+Project Context.txt
